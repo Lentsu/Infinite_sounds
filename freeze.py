@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Freeze audio effect using velvet noise convolution.
+Freeze audio effect using velvet noise or fft convolution.
 """
 
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.signal import lfilter, fftconvolve
 from enum import Enum
 import argparse
@@ -59,7 +60,7 @@ def window(n, N, w):
     return y
 
 
-def freeze(x, fs, ti, to, d, w):
+def freeze(x, fs, ti, to, d, w, plot_file=None):
     """Creates the freeze effect using velvet-noise convolution
     
     Keyword arguments:
@@ -110,8 +111,40 @@ def freeze(x, fs, ti, to, d, w):
         20 * np.log10(np.maximum(np.abs(y), 1e-6)),
         zi=[20 * np.log10(d / ti)]
     )[0]
-
     y *= 10**(np.minimum(lx - ly, 6) / 20)
+
+    # Plot the signals
+    t_x = np.arange(len(x)) / fs
+    t_xg = np.arange(len(xg)) / fs
+    t_y = np.arange(len(y)) / fs
+
+    fig, axs = plt.subplots(4, 1, figsize=(12, 9), sharex=False)
+
+    axs[0].plot(t_x, x)
+    axs[0].set_title("Input signal")
+
+    axs[1].stem(t_y, n)
+    axs[1].set_title("Velvet noise")
+
+    axs[2].plot(t_xg, xg)
+    axs[2].set_title("Granulated input")
+
+    axs[3].plot(t_y, y)
+    axs[3].set_title("Output signal")
+
+    for a in axs:
+        a.set_xlabel("Time [s]")
+        a.set_ylabel("Amplitude")
+        a.grid(True)
+
+    plt.tight_layout()
+
+    # Show or save the plot
+    if plot_file is None:
+        plt.show()
+    else:
+        plt.savefig(plot_file)
+        plt.close(fig)
 
     return y
 
@@ -129,13 +162,16 @@ def main():
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("duration", type=float)
+    parser.add_argument("--window", type=int, default=Window.NUTTAL)
     parser.add_argument("--grain", type=float, default=None)
     parser.add_argument("--density", type=float, default=40.0)
+    parser.add_argument("--plot", type=str, default=None)
     args = parser.parse_args()
 
     # Assign the arguments to variables
     to = args.duration
     d = args.density
+    w = args.window
 
     # Extract the samples and sampling rate from the input file
     x,fs = sf.read(args.input)
@@ -151,7 +187,7 @@ def main():
         ti = args.grain
 
     # Apply the freeze effect
-    y = freeze(x, fs, ti, to, d, Window.NUTTAL)
+    y = freeze(x, fs, ti, to, d, w, args.plot)
 
     # Write the frozen sound to the output file
     sf.write(args.output, y, fs)
