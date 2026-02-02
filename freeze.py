@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
+
 """
-Freeze audio effect using velvet noise or fft convolution.
+Freeze audio effect using velvet noise convolution or FFT method.
+
+Usage:
+python freeze.py <input.wav> <new duration [s]> (--output <output.wav>)
+(--method <freezing method>) (--window <window type id>) (--grain <grain-size
+[s]>) (--density <grain-density>) (--plot <plot_filepath.png>)
 """
 
+import argparse
+from enum import Enum
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import lfilter, fftconvolve
-from enum import Enum
-import argparse
 import soundfile as sf
 import simpleaudio as sa
 
+
+class Methods(Enum):
+    """Enumerator for implemented signal freezing methods"""
+    VELVET_NOISE_CONVOLUTION = 1
+    FFT_METHOD = 2
+
+
 class Window(Enum):
+    """Enumerator for implemented window types"""
     TRIANGULAR = 1
     PARZEN = 2
     NUTTAL = 3
@@ -21,7 +35,7 @@ class Window(Enum):
 
 def window(n, N, w):
     """ Constructs a window function.
-    
+
     Keyword arguments:
     n -- the input array
     N -- window length in samples
@@ -31,15 +45,16 @@ def window(n, N, w):
 
     if w == Window.TRIANGULAR:
         # Triangular
-        y = 1.0 - np.abs(2 * n/N - 1)
+        y = 1.0 - np.abs(2 * n / N - 1)
     elif w == Window.PARZEN:
         # Parzen
-        n2 = n - N/2
+        n2 = n - N / 2
         y = np.zeroes_like(n2)
         mask1 = np.abs(n2) < N / 4
         mask2 = ~mask1
-        y[mask1] = 1 - 6*(2*n2[mask1] / N)**2 * (1 - 2*np.abs(n2[mask1]) / N)
-        y[mask2] = 2*(1 - 2*np.abs(n2[mask2]) / N)**3
+        y[mask1] = 1 - 6 * (2 * n2[mask1] / N)**2 * \
+            (1 - 2 * np.abs(n2[mask1]) / N)
+        y[mask2] = 2 * (1 - 2 * np.abs(n2[mask2]) / N)**3
     elif w == Window.NUTTAL:
         # Nuttal
         a0 = 0.355768
@@ -48,16 +63,16 @@ def window(n, N, w):
         a3 = 0.012604
         y = (
             a0
-            - a1 * np.cos(2*np.pi * n/(N - 1))
-            + a2 * np.cos(4*np.pi * n/(N - 1))
-            - a3 * np.cos(6*np.pi * n/(N - 1))
+            - a1 * np.cos(2 * np.pi * n / (N - 1))
+            + a2 * np.cos(4 * np.pi * n / (N - 1))
+            - a3 * np.cos(6 * np.pi * n / (N - 1))
         )
     elif w == Window.SINUSOIDAL:
         # Sinusoidal
-        y = np.sin(np.pi * n/(N - 1))
+        y = np.sin(np.pi * n / (N - 1))
     else:
         # Welch
-        y = 1 - ((n - (N - 1)/2) / ((N - 1)/2))**2
+        y = 1 - ((n - (N - 1) / 2) / ((N - 1) / 2))**2
 
     return y
 
@@ -100,7 +115,7 @@ def plot_signals(x, n, xg, y, fs, plot_file=None):
     plt.tight_layout()
 
     # Plot the input and output spectrograms
-    fig_spec,axs_spec = plt.subplots(2, 1, figsize=(12,6), sharex=False)
+    fig_spec, axs_spec = plt.subplots(2, 1, figsize=(12, 6), sharex=False)
 
     axs_spec[0].specgram(x, Fs=fs, scale="dB", cmap="grey")
     axs_spec[0].set_title("Input signal")
@@ -121,9 +136,9 @@ def plot_signals(x, n, xg, y, fs, plot_file=None):
         plt.close(fig)
 
 
-def freeze(x, fs, ti, to, d, w, plot_file=None):
+def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
     """Creates the freeze effect using velvet-noise convolution
-    
+
     Keyword arguments:
     x  -- the input signal
     fs -- sampling rate in Hz
@@ -131,6 +146,7 @@ def freeze(x, fs, ti, to, d, w, plot_file=None):
     to -- output duration in seconds
     d  -- average grain density
     w  -- window type identifier (enum)
+    plot_file -- (optional) audio output filename
     """
 
     x = np.asarray(x, dtype=float)
@@ -174,15 +190,17 @@ def freeze(x, fs, ti, to, d, w, plot_file=None):
     )[0]
 
     y *= 10**(np.minimum(lx - ly, 6) / 20)
-    #y *= 10**((lx - ly) / 20)
 
     # Plot the signals
     plot_signals(x, n, xg, y, fs, plot_file)
 
     return y
 
+def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
+    # TODO
+    return x
 
-def play_audio(x,fs):
+def play_audio(x, fs):
     """Plays the audio signal x with sample rate fs"""
     # Normalize the audio
     max_val = np.max(np.abs(x))
@@ -191,12 +209,13 @@ def play_audio(x,fs):
     # Convert to 16-bit PCM
     y_PCM16 = np.int16(x * 32767)
     # Play
-    play_obj = sa.play_buffer(
+    sa.play_buffer(
         y_PCM16,
         num_channels=1,
         bytes_per_sample=2,
         sample_rate=fs
     )
+
 
 def main():
     """ CLI entry point for the script
@@ -205,17 +224,41 @@ def main():
     input    -- path to input audio file
     output   -- path to output audio file
     duration -- output duration in seconds
+    method   -- method for the freeze effect
+    window   -- window type identifier
+    grain    -- the grain/window size in seconds
     density  -- average grain density
+    plot     -- path to output plot file(s)
     """
+    usage = (
+        "python freeze.py <input.wav> <new duration [s]>\n"
+        "    (--output <output.wav>)\n"
+        "    (--method <freezing method>)\n"
+        "    (--window <window type id>)\n"
+        "    (--grain <grain-size [s]>)\n"
+        "    (--density <grain-density>)\n"
+        "    (--plot <plot_filepath.png>)"
+    )
+    description = "Freeze audio effect using velvet noise convolution or FFT method"
+
     # Parse the CLI arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input")
-    parser.add_argument("duration", type=float)
-    parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--window", type=int, default=Window.NUTTAL)
-    parser.add_argument("--grain", type=float, default=None)
-    parser.add_argument("--density", type=float, default=40.0)
-    parser.add_argument("--plot", type=str, default=None)
+    parser = argparse.ArgumentParser(usage, description)
+    parser.add_argument("input", type=str,
+                        help="path to input audio file")
+    parser.add_argument("duration", type=float,
+                        help="output duration in seconds")
+    parser.add_argument("method", type=int, default=Methods.VELVET_NOISE_CONVOLUTION,
+                        help="method for the freeze effect")
+    parser.add_argument("--output", type=str, default=None,
+                        help="path to output audio file")
+    parser.add_argument("--window", type=int, default=Window.NUTTAL,
+                        help="window type identifier (enum)")
+    parser.add_argument("--grain", type=float, default=None,
+                        help="grain/window size in seconds")
+    parser.add_argument("--density", type=float, default=40.0,
+                        help="average grain density")
+    parser.add_argument("--plot", type=str, default=None,
+                        help="path to output plot file")
     args = parser.parse_args()
 
     # Assign the arguments to variables
@@ -224,12 +267,12 @@ def main():
     w = args.window
 
     # Extract the samples and sampling rate from the input file
-    x,fs = sf.read(args.input)
+    x, fs = sf.read(args.input)
 
     # Turn the sound to mono
     if x.ndim > 1:
         x = x.mean(axis=1)
-    
+
     # Calculate the grain size (if not given)
     if args.grain is None:
         ti = len(x) / fs
@@ -237,17 +280,23 @@ def main():
         ti = args.grain
 
     # Apply the freeze effect
-    y = freeze(x, fs, ti, to, d, w, args.plot)
+    if args.method == Methods.VELVET_NOISE_CONVOLUTION:
+        y = freeze_velvet(x, fs, ti, to, d, w, args.plot)
+    elif args.method == Methods.FFT_METHOD:
+        y = freeze_fft(x, fs, ti, to, d, w, args.plot)
+    else:
+        # Default to Velvet noise convolution
+        y = freeze_velvet(x, fs, ti, to, d, w, args.plot)
 
     # Write the frozen sound to the output file (if given)
     if args.output is not None:
         sf.write(args.output, y, fs)
     # Else, play the audio
     else:
-        play_audio(y,fs)
+        play_audio(y, fs)
+        # Wait input before ending the script (closing plots)
+        input("[Press Enter]")
 
-    # Wait input before ending the script (closing plots)
-    input("[Press Enter]")
 
 if __name__ == "__main__":
     main()
