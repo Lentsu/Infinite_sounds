@@ -9,6 +9,7 @@ from scipy.signal import lfilter, fftconvolve
 from enum import Enum
 import argparse
 import soundfile as sf
+import simpleaudio as sa
 
 class Window(Enum):
     TRIANGULAR = 1
@@ -16,6 +17,7 @@ class Window(Enum):
     NUTTAL = 3
     SINUSOIDAL = 4
     WELCH = 5
+
 
 def window(n, N, w):
     """ Constructs a window function.
@@ -58,6 +60,65 @@ def window(n, N, w):
         y = 1 - ((n - (N - 1)/2) / ((N - 1)/2))**2
 
     return y
+
+
+def plot_signals(x, n, xg, y, fs, plot_file=None):
+    """Plots the velvet-noise freeze effect signals
+
+    Keyword arguments:
+    x  -- the input signal
+    n  -- velvet noise signal
+    xg -- granulated input signal
+    y  -- the output signal
+    fs -- sampling rate in Hz
+    plot_file -- (optional) audio output filename
+    """
+    # Plot the time domain signals
+    t_x = np.arange(len(x)) / fs
+    t_xg = np.arange(len(xg)) / fs
+    t_y = np.arange(len(y)) / fs
+
+    fig, axs = plt.subplots(4, 1, figsize=(12, 9), sharex=False)
+
+    axs[0].plot(t_x, x)
+    axs[0].set_title("Input signal")
+
+    axs[1].stem(t_y, n)
+    axs[1].set_title("Velvet noise")
+
+    axs[2].plot(t_xg, xg)
+    axs[2].set_title("Granulated input")
+
+    axs[3].plot(t_y, y)
+    axs[3].set_title("Output signal")
+
+    for a in axs:
+        a.set_xlabel("Time [s]")
+        a.set_ylabel("Amplitude")
+        a.grid(True)
+
+    plt.tight_layout()
+
+    # Plot the input and output spectrograms
+    fig_spec,axs_spec = plt.subplots(2, 1, figsize=(12,6), sharex=False)
+
+    axs_spec[0].specgram(x, Fs=fs, scale="dB", cmap="grey")
+    axs_spec[0].set_title("Input signal")
+    axs_spec[0].set_ylabel("Freq. [Hz]")
+
+    axs_spec[1].specgram(y, Fs=fs, scale="dB", cmap="grey")
+    axs_spec[1].set_title("Output signal")
+    axs_spec[1].set_ylabel("Freq. [Hz]")
+
+    plt.tight_layout()
+
+    # Show or save the plots
+    if plot_file is None:
+        plt.show(block=False)
+    else:
+        fig.savefig(plot_file.replace(".png", "_signals.png"))
+        fig_spec.savefig(plot_file.replace(".png", "_spectrogram.png"))
+        plt.close(fig)
 
 
 def freeze(x, fs, ti, to, d, w, plot_file=None):
@@ -111,42 +172,31 @@ def freeze(x, fs, ti, to, d, w, plot_file=None):
         20 * np.log10(np.maximum(np.abs(y), 1e-6)),
         zi=[20 * np.log10(d / ti)]
     )[0]
+
     y *= 10**(np.minimum(lx - ly, 6) / 20)
+    #y *= 10**((lx - ly) / 20)
 
     # Plot the signals
-    t_x = np.arange(len(x)) / fs
-    t_xg = np.arange(len(xg)) / fs
-    t_y = np.arange(len(y)) / fs
-
-    fig, axs = plt.subplots(4, 1, figsize=(12, 9), sharex=False)
-
-    axs[0].plot(t_x, x)
-    axs[0].set_title("Input signal")
-
-    axs[1].stem(t_y, n)
-    axs[1].set_title("Velvet noise")
-
-    axs[2].plot(t_xg, xg)
-    axs[2].set_title("Granulated input")
-
-    axs[3].plot(t_y, y)
-    axs[3].set_title("Output signal")
-
-    for a in axs:
-        a.set_xlabel("Time [s]")
-        a.set_ylabel("Amplitude")
-        a.grid(True)
-
-    plt.tight_layout()
-
-    # Show or save the plot
-    if plot_file is None:
-        plt.show()
-    else:
-        plt.savefig(plot_file)
-        plt.close(fig)
+    plot_signals(x, n, xg, y, fs, plot_file)
 
     return y
+
+
+def play_audio(x,fs):
+    """Plays the audio signal x with sample rate fs"""
+    # Normalize the audio
+    max_val = np.max(np.abs(x))
+    if max_val > 1:
+        x = x / max_val
+    # Convert to 16-bit PCM
+    y_PCM16 = np.int16(x * 32767)
+    # Play
+    play_obj = sa.play_buffer(
+        y_PCM16,
+        num_channels=1,
+        bytes_per_sample=2,
+        sample_rate=fs
+    )
 
 def main():
     """ CLI entry point for the script
@@ -160,8 +210,8 @@ def main():
     # Parse the CLI arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
-    parser.add_argument("output")
     parser.add_argument("duration", type=float)
+    parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--window", type=int, default=Window.NUTTAL)
     parser.add_argument("--grain", type=float, default=None)
     parser.add_argument("--density", type=float, default=40.0)
@@ -189,8 +239,15 @@ def main():
     # Apply the freeze effect
     y = freeze(x, fs, ti, to, d, w, args.plot)
 
-    # Write the frozen sound to the output file
-    sf.write(args.output, y, fs)
+    # Write the frozen sound to the output file (if given)
+    if args.output is not None:
+        sf.write(args.output, y, fs)
+    # Else, play the audio
+    else:
+        play_audio(y,fs)
+
+    # Wait input before ending the script (closing plots)
+    input("[Press Enter]")
 
 if __name__ == "__main__":
     main()
