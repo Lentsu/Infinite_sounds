@@ -17,11 +17,14 @@ from scipy.signal import lfilter, fftconvolve
 import soundfile as sf
 import simpleaudio as sa
 
+# Suppress divide by 0 warnings
+np.seterr(divide='ignore')
 
-class Methods(Enum):
+
+class Method(Enum):
     """Enumerator for implemented signal freezing methods"""
     VELVET_NOISE_CONVOLUTION = 1
-    FFT_METHOD = 2
+    PHASE_VOCODER = 2
 
 
 class Window(Enum):
@@ -77,35 +80,42 @@ def window(n, N, w):
     return y
 
 
-def plot_signals(x, n, xg, y, fs, plot_file=None):
-    """Plots the velvet-noise freeze effect signals
+def plot_signals(x, xg, y, fs, m, plot_file=None, n=None):
+    """Plots the freeze effect signals.
 
     Keyword arguments:
     x  -- the input signal
-    n  -- velvet noise signal
-    xg -- granulated input signal
+    xg -- frozen frame (input grain)
     y  -- the output signal
     fs -- sampling rate in Hz
+    m  -- the freezing effect methods
     plot_file -- (optional) audio output filename
+    n  -- velvet noise signal if Method.VELVET_NOISE_CONVOLUTION
     """
     # Plot the time domain signals
     t_x = np.arange(len(x)) / fs
     t_xg = np.arange(len(xg)) / fs
     t_y = np.arange(len(y)) / fs
 
-    fig, axs = plt.subplots(4, 1, figsize=(12, 9), sharex=False)
+    # Plot velvet noise only for velvet noise convolution
+    if m == Method.VELVET_NOISE_CONVOLUTION:
+        fig, axs = plt.subplots(4, 1, figsize=(12, 9), sharex=False)
+    else:
+        fig, axs = plt.subplots(3, 1, figsize=(12, 9), sharex=False)
 
     axs[0].plot(t_x, x)
     axs[0].set_title("Input signal")
 
-    axs[1].stem(t_y, n)
-    axs[1].set_title("Velvet noise")
+    axs[1].plot(t_xg, xg)
+    axs[1].set_title("Granulated input")
 
-    axs[2].plot(t_xg, xg)
-    axs[2].set_title("Granulated input")
+    axs[2].plot(t_y, y)
+    axs[2].set_title("Output signal")
 
-    axs[3].plot(t_y, y)
-    axs[3].set_title("Output signal")
+    # Plot velvet noise only for velvet noise convolution
+    if m == Method.VELVET_NOISE_CONVOLUTION:
+        axs[3].stem(t_y, n)
+        axs[3].set_title("Velvet noise")
 
     for a in axs:
         a.set_xlabel("Time [s]")
@@ -148,7 +158,6 @@ def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
     w  -- window type identifier (enum)
     plot_file -- (optional) audio output filename
     """
-
     x = np.asarray(x, dtype=float)
 
     N = int(round(ti * fs))
@@ -192,13 +201,101 @@ def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
     y *= 10**(np.minimum(lx - ly, 6) / 20)
 
     # Plot the signals
-    plot_signals(x, n, xg, y, fs, plot_file)
+    plot_signals(x, xg, y, fs, Method.VELVET_NOISE_CONVOLUTION, plot_file, n)
 
     return y
 
+
 def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
-    # TODO
-    return x
+    """Creates the freeze effect using phase vocoding (fft-based technique) 
+
+    Keyword arguments:
+    x  -- the input signal
+    fs -- sampling rate in Hz
+    ti -- input duration in seconds
+    to -- output duration in seconds
+    d  -- average grain density
+    w  -- window type identifier (enum)
+    plot_file -- (optional) audio output filename
+    """
+    x = np.asarray(x, dtype=float)
+
+    # Grain length and output length
+    N = int(round(ti * fs))
+    No = int(round(to * fs))
+
+    # Analysis window
+    win = window(np.arange(N), N, w)
+
+    # Take last grain and window it
+    xg = x[-N:] * win
+
+    # FFT of frozen frame
+    X = np.fft.rfft(xg)
+    mag = np.abs(X)
+
+    # Hop size from density (grains per second)
+    hop = max(1, int(fs / d))
+
+    # Number of frames needed
+    num_frames = int(np.ceil(No / hop)) + 2
+
+    # Output buffer
+    y = np.zeros(No + N)
+
+    # Overlap-add synthesis with random phase
+    for i in range(num_frames):
+        # Random phase for each bin
+        phase = np.exp(1j * 2 * np.pi * np.random.rand(len(mag)))
+
+        # Recreate spectrum with frozen magnitude
+        Y = mag * phase
+
+        # IFFT frame
+        frame = np.fft.irfft(Y)
+
+        # Apply window again (OLA consistency)
+        frame *= win
+
+        # Overlap-add
+        start = i * hop
+        end = start + N
+
+        # If frame exceeds output length → truncate it
+        if end > len(y):
+            frame = frame[:len(y) - start]
+            end = len(y)
+
+        y[start:end] += frame
+
+    y = y[:No]
+
+    # Estimate input level
+    tau = 0.06514417228548776
+    mA1 = np.exp(-1 / (fs * tau))
+    B0 = 1 - mA1
+
+    # filter
+    lx = lfilter(
+        [B0], [1, -mA1],
+        20 * np.log10(np.maximum(np.abs(x), 1e-6)),
+        zi=[-120]
+    )[0][-1]
+
+    # Compensate output level
+    ly = lfilter(
+        [B0], [1, -mA1],
+        20 * np.log10(np.maximum(np.abs(y), 1e-6)),
+        zi=[20 * np.log10(d / ti)]
+    )[0]
+
+    y *= 10 ** (np.minimum(lx - ly, 6) / 20)
+
+    # Plot the signals
+    plot_signals(x, xg, y, fs, Method.PHASE_VOCODER, plot_file)
+    
+    return y
+
 
 def play_audio(x, fs):
     """Plays the audio signal x with sample rate fs"""
@@ -247,7 +344,7 @@ def main():
                         help="path to input audio file")
     parser.add_argument("duration", type=float,
                         help="output duration in seconds")
-    parser.add_argument("method", type=int, default=Methods.VELVET_NOISE_CONVOLUTION,
+    parser.add_argument("--method", type=int, default=Method.VELVET_NOISE_CONVOLUTION,
                         help="method for the freeze effect")
     parser.add_argument("--output", type=str, default=None,
                         help="path to output audio file")
@@ -264,8 +361,19 @@ def main():
     # Assign the arguments to variables
     to = args.duration
     d = args.density
-    w = args.window
-
+    
+    # Get the window type from args
+    try:
+        w = Window(args.window)
+    except:
+        parser.error(f"Invalid window type '{args.window}'.")
+    
+    # Get the freezing method from args
+    try:
+        m = Method(args.method)
+    except:
+        parser.error(f"Invalid freezing method '{args.method}'.")
+    
     # Extract the samples and sampling rate from the input file
     x, fs = sf.read(args.input)
 
@@ -280,13 +388,15 @@ def main():
         ti = args.grain
 
     # Apply the freeze effect
-    if args.method == Methods.VELVET_NOISE_CONVOLUTION:
+    if m == Method.VELVET_NOISE_CONVOLUTION:
         y = freeze_velvet(x, fs, ti, to, d, w, args.plot)
-    elif args.method == Methods.FFT_METHOD:
+    elif m == Method.PHASE_VOCODER:
         y = freeze_fft(x, fs, ti, to, d, w, args.plot)
     else:
-        # Default to Velvet noise convolution
-        y = freeze_velvet(x, fs, ti, to, d, w, args.plot)
+        # Invalid arguments
+        parser.error(
+            f"Invalid freezing method '{args.method}'. "
+        )
 
     # Write the frozen sound to the output file (if given)
     if args.output is not None:
