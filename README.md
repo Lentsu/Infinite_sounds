@@ -4,7 +4,7 @@ A CLI freeze audio effect.
 
 Velvet noise convolution method is based on [1].
 
-FFT method based on [2].
+Random-phase vocoder method based on [2].
 
 ## Installation
 
