@@ -23,8 +23,9 @@ np.seterr(divide='ignore')
 
 class Method(Enum):
     """Enumerator for implemented signal freezing methods"""
-    VELVET_NOISE_CONVOLUTION = 1
-    PHASE_VOCODER = 2
+    VELVET_NOISE_CONVOLUTION_NO_COMPENSATION = 1
+    VELVET_NOISE_CONVOLUTION = 2
+    RANDOM_PHASE_VOCODER = 3
 
 
 class Window(Enum):
@@ -146,7 +147,7 @@ def plot_signals(x, xg, y, fs, m, plot_file=None, n=None):
         plt.close(fig)
 
 
-def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
+def freeze_velvet(x, fs, ti, to, d, w, plot_file=None, compensate=True):
     """Creates the freeze effect using velvet-noise convolution
 
     Keyword arguments:
@@ -171,34 +172,37 @@ def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
     n[nx > high] = 1
     n[nx < low] = -1
 
-    # Estimate input level
-    tau = 0.06514417228548776
-    mA1 = np.exp(-1 / (fs * tau))
-    B0 = 1 - mA1
-
-    # Filter
-    lx = lfilter(
-        [B0],
-        [1, -mA1],
-        20 * np.log10(np.maximum(np.abs(x), 1e-6)),
-        zi=[-120]
-    )[0][-1]
-
     # Granulate input
     xg = x[-N:] * window(np.arange(N), N, w)
 
     # Convolve
     y = fftconvolve(xg, n, mode="full")[:No]
 
-    # Compensate output level
-    ly = lfilter(
-        [B0],
-        [1, -mA1],
-        20 * np.log10(np.maximum(np.abs(y), 1e-6)),
-        zi=[20 * np.log10(d / ti)]
-    )[0]
-
-    y *= 10**(np.minimum(lx - ly, 6) / 20)
+    # If compensation is enabled
+    if compensate:
+        # Estimate input level
+        tau = 0.06514417228548776
+        mA1 = np.exp(-1 / (fs * tau))
+        B0 = 1 - mA1
+        # Filter
+        lx = lfilter(
+            [B0],
+            [1, -mA1],
+            20 * np.log10(np.maximum(np.abs(x), 1e-6)),
+            zi=[-120]
+        )[0][-1]
+        # Compensate output level
+        ly = lfilter(
+            [B0],
+            [1, -mA1],
+            20 * np.log10(np.maximum(np.abs(y), 1e-6)),
+            zi=[20 * np.log10(d / ti)]
+        )[0]
+        # Compensated output is more smooth but lower volume
+        y *= 10**(np.minimum(lx - ly, 6) / 20)
+    else:
+        # Just Normalized output is high volume but isn't smooth
+        y /= np.max(np.abs(y)) + 1e-12    # 1e-12 to avoid divide by 0
 
     # Plot the signals
     plot_signals(x, xg, y, fs, Method.VELVET_NOISE_CONVOLUTION, plot_file, n)
@@ -207,7 +211,7 @@ def freeze_velvet(x, fs, ti, to, d, w, plot_file=None):
 
 
 def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
-    """Creates the freeze effect using phase vocoding (fft-based technique) 
+    """Creates the freeze effect using random phase vocoder (fft-based technique) 
 
     Keyword arguments:
     x  -- the input signal
@@ -220,79 +224,38 @@ def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
     """
     x = np.asarray(x, dtype=float)
 
-    # Grain length and output length
+    # Grain length, output length
     N = int(round(ti * fs))
     No = int(round(to * fs))
 
-    # Analysis window
+    # Create the window
     win = window(np.arange(N), N, w)
 
-    # Take last grain and window it
+    # Input grain (windowed)
     xg = x[-N:] * win
 
-    # FFT of frozen frame
-    X = np.fft.rfft(xg)
-    mag = np.abs(X)
+    # FFT of input grain 
+    Xf = np.fft.fft(xg)
+    Rx = np.abs(Xf)
 
-    # Hop size from density (grains per second)
-    hop = max(1, int(fs / d))
+    # Random phase values
+    theta_r = np.random.uniform(-np.pi, np.pi, len(Rx))
 
-    # Number of frames needed
-    num_frames = int(np.ceil(No / hop)) + 2
+    # Rx * exp(j*\theta_r)
+    Yf = Rx * np.exp(1j * theta_r)
 
-    # Output buffer
-    y = np.zeros(No + N)
+    # IFFT -> output grain
+    yg = np.real(np.fft.ifft(Yf))
 
-    # Overlap-add synthesis with random phase
-    for i in range(num_frames):
-        # Random phase for each bin
-        phase = np.exp(1j * 2 * np.pi * np.random.rand(len(mag)))
+    # Normalize
+    yg /= np.max(np.abs(yg)) + 1e-12    # 1e-12 to avoid divide by 0
 
-        # Recreate spectrum with frozen magnitude
-        Y = mag * phase
-
-        # IFFT frame
-        frame = np.fft.irfft(Y)
-
-        # Apply window again (OLA consistency)
-        frame *= win
-
-        # Overlap-add
-        start = i * hop
-        end = start + N
-
-        # If frame exceeds output length → truncate it
-        if end > len(y):
-            frame = frame[:len(y) - start]
-            end = len(y)
-
-        y[start:end] += frame
-
-    y = y[:No]
-
-    # Estimate input level
-    tau = 0.06514417228548776
-    mA1 = np.exp(-1 / (fs * tau))
-    B0 = 1 - mA1
-
-    # filter
-    lx = lfilter(
-        [B0], [1, -mA1],
-        20 * np.log10(np.maximum(np.abs(x), 1e-6)),
-        zi=[-120]
-    )[0][-1]
-
-    # Compensate output level
-    ly = lfilter(
-        [B0], [1, -mA1],
-        20 * np.log10(np.maximum(np.abs(y), 1e-6)),
-        zi=[20 * np.log10(d / ti)]
-    )[0]
-
-    y *= 10 ** (np.minimum(lx - ly, 6) / 20)
+    # Fill the output duration with grain
+    i = int(np.ceil(No / N))
+    y = np.tile(yg, i)[:No]
 
     # Plot the signals
-    plot_signals(x, xg, y, fs, Method.PHASE_VOCODER, plot_file)
+    plot_signals(x, xg, y, fs, Method.RANDOM_PHASE_VOCODER, plot_file)
     
     return y
 
@@ -388,9 +351,11 @@ def main():
         ti = args.grain
 
     # Apply the freeze effect
-    if m == Method.VELVET_NOISE_CONVOLUTION:
+    if m == Method.VELVET_NOISE_CONVOLUTION_NO_COMPENSATION:
+        y = freeze_velvet(x, fs, ti, to, d, w, args.plot, compensate=False)
+    elif m == Method.VELVET_NOISE_CONVOLUTION:
         y = freeze_velvet(x, fs, ti, to, d, w, args.plot)
-    elif m == Method.PHASE_VOCODER:
+    elif m == Method.RANDOM_PHASE_VOCODER:
         y = freeze_fft(x, fs, ti, to, d, w, args.plot)
     else:
         # Invalid arguments
