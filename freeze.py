@@ -129,12 +129,39 @@ def plot_signals(x, xg, y, fs, m, plot_file=None, n=None):
     fig_spec, axs_spec = plt.subplots(2, 1, figsize=(12, 6), sharex=False)
 
     axs_spec[0].specgram(x, Fs=fs, scale="dB", cmap="grey")
-    axs_spec[0].set_title("Input signal")
+    axs_spec[0].set_title("Input spectrogram")
+    axs_spec[0].set_xlabel("Time [s]")
     axs_spec[0].set_ylabel("Freq. [Hz]")
 
     axs_spec[1].specgram(y, Fs=fs, scale="dB", cmap="grey")
-    axs_spec[1].set_title("Output signal")
+    axs_spec[1].set_title("Output spectrogram")
+    axs_spec[1].set_xlabel("Time [s]")
     axs_spec[1].set_ylabel("Freq. [Hz]")
+
+    plt.tight_layout()
+    
+    # Plot the input and output spectrums 
+    fig_mag, axs_mag = plt.subplots(2, 1, figsize=(12, 6), sharex=False)
+
+    # Input spectrum
+    Xf = np.fft.rfft(x)
+    fx = np.fft.rfftfreq(len(x), 1/fs)
+    XM = 20 * np.log10(np.abs(Xf) + 1e-12)
+    axs_mag[0].plot(fx, XM)
+    axs_mag[0].set_title("Input spectrum")
+    axs_mag[0].set_xlabel("Freq. [Hz]")
+    axs_mag[0].set_ylabel("Mag. [dB]")
+    axs_mag[0].grid(True)
+
+    # Output spectrum
+    Yf = np.fft.rfft(y)
+    fy = np.fft.rfftfreq(len(y), 1/fs)
+    YM = 20 * np.log10(np.abs(Yf) + 1e-12)
+    axs_mag[1].plot(fy, YM)
+    axs_mag[1].set_title("Output spectrum")
+    axs_mag[1].set_xlabel("Freq. [Hz]")
+    axs_mag[1].set_ylabel("Mag. [dB]")
+    axs_mag[1].grid(True)
 
     plt.tight_layout()
 
@@ -144,6 +171,7 @@ def plot_signals(x, xg, y, fs, m, plot_file=None, n=None):
     else:
         fig.savefig(plot_file.replace(".png", "_signals.png"))
         fig_spec.savefig(plot_file.replace(".png", "_spectrogram.png"))
+        fig_mag.savefig(plot_file.replace(".png", "_spectrum.png"))
         plt.close(fig)
 
 
@@ -234,8 +262,12 @@ def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
     # Input grain (windowed)
     xg = x[-N:] * win
 
+    # Zero-pad the input grain
+    xg_pad = np.zeros(No)
+    xg_pad[:N] = xg
+
     # FFT of input grain 
-    Xf = np.fft.fft(xg)
+    Xf = np.fft.fft(xg_pad)
     Rx = np.abs(Xf)
 
     # Random phase values
@@ -244,18 +276,14 @@ def freeze_fft(x, fs, ti, to, d, w, plot_file=None):
     # Rx * exp(j*\theta_r)
     Yf = Rx * np.exp(1j * theta_r)
 
-    # IFFT -> output grain
-    yg = np.real(np.fft.ifft(Yf))
+    # IFFT -> output signal
+    y = np.real(np.fft.ifft(Yf))
 
     # Normalize
-    yg /= np.max(np.abs(yg)) + 1e-12    # 1e-12 to avoid divide by 0
-
-    # Fill the output duration with grain
-    i = int(np.ceil(No / N))
-    y = np.tile(yg, i)[:No]
+    y /= np.max(np.abs(y)) + 1e-12    # 1e-12 to avoid divide by 0
 
     # Plot the signals
-    plot_signals(x, xg, y, fs, Method.RANDOM_PHASE_VOCODER, plot_file)
+    plot_signals(x, xg_pad, y, fs, Method.RANDOM_PHASE_VOCODER, plot_file)
     
     return y
 
